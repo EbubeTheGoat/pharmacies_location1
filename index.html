@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Places I've Been</title>
+<title>Pharmacy Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -40,6 +40,8 @@
   .topbar-title { display: flex; align-items: center; gap: 10px; }
   .topbar-mark  { width: 30px; height: 30px; flex: none; }
   .topbar h1    { font-family: var(--font-display); font-weight: 600; font-size: 1.28rem; margin: 0; color: var(--parchment); }
+  
+  .topbar-actions { display: flex; gap: 10px; align-items: center; }
   .topbar-count { font-family: var(--font-mono); font-size: 0.78rem; color: var(--brass-bright); border: 1px solid var(--rule); border-radius: 999px; padding: 5px 12px; white-space: nowrap; }
 
   /* ── Proximity banner ── */
@@ -118,6 +120,34 @@
   .btn.is-loading svg { animation: spin 900ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* ── Modal (Pharmacies List) ── */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(19, 23, 28, 0.85);
+    backdrop-filter: blur(4px);
+    display: none; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .modal-backdrop.is-visible { display: flex; }
+  .modal-surface {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 12px; width: 100%; max-width: 500px;
+    max-height: 80vh; display: flex; flex-direction: column;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  }
+  .modal-header {
+    padding: 16px 20px; border-bottom: 1px solid var(--rule);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .modal-header h2 { margin: 0; font-family: var(--font-display); font-size: 1.2rem; color: var(--parchment); }
+  .close-btn { background: none; border: none; color: var(--parchment-dim); cursor: pointer; font-size: 1.5rem; line-height: 1; padding: 0; }
+  .close-btn:hover { color: var(--danger); }
+  .modal-body { padding: 0; overflow-y: auto; }
+  .pharmacy-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
+  .pharmacy-table th { position: sticky; top: 0; background: var(--surface-2); padding: 12px 20px; color: var(--parchment-dim); font-weight: 500; border-bottom: 1px solid var(--rule); }
+  .pharmacy-table td { padding: 12px 20px; border-bottom: 1px solid var(--rule); color: var(--parchment); }
+  .pharmacy-table tr:last-child td { border-bottom: none; }
+
   @media (prefers-reduced-motion: reduce) {
     .btn.is-loading svg { animation: none; }
     .status { transition: none; }
@@ -140,9 +170,12 @@
         <circle cx="15" cy="15" r="2.4" fill="#c4883a"/>
         <path d="M15 2v6M15 22v6M2 15h6M22 15h6" stroke="#c4883a" stroke-width="1.4"/>
       </svg>
-      <h1>Places I've Been</h1>
+      <h1>Pharmacy Tracker</h1>
     </div>
-    <div class="topbar-count" id="place-count">0 logged</div>
+    <div class="topbar-actions">
+      <div class="topbar-count" id="place-count">0 logged</div>
+      <button class="btn btn-track" id="list-pharmacies-btn" style="padding: 6px 12px; font-size: 0.8rem; box-shadow: none;">View All</button>
+    </div>
   </header>
 
   <!-- Shown when user is within 500m of a saved place -->
@@ -152,7 +185,7 @@
       <circle cx="10" cy="10" r="2" fill="currentColor"/>
       <path d="M10 1v3M10 16v3M1 10h3M16 10h3" stroke="currentColor" stroke-width="1.4"/>
     </svg>
-    <span id="proximity-text">You're near a saved place</span>
+    <span id="proximity-text">You're near a saved pharmacy</span>
   </div>
 
   <main>
@@ -163,8 +196,8 @@
         <path d="M24 4C14 4 7 12 7 21c0 12 17 23 17 23s17-11 17-23c0-9-7-17-17-17z" stroke="#ece5d6" stroke-width="1.6"/>
         <circle cx="24" cy="21" r="6" stroke="#ece5d6" stroke-width="1.6"/>
       </svg>
-      <p class="empty-title">No places logged yet</p>
-      <p class="empty-sub">Tap "Mark this place" to log where you are right now.</p>
+      <p class="empty-title">No pharmacies logged yet</p>
+      <p class="empty-sub">Tap "Mark this pharmacy" to log where you are right now.</p>
     </div>
 
     <div class="controls">
@@ -183,11 +216,30 @@
             <circle cx="10" cy="10" r="2" fill="currentColor"/>
             <path d="M10 1v3M10 16v3M1 10h3M16 10h3" stroke="currentColor" stroke-width="1.6"/>
           </svg>
-          <span id="log-label">Mark this place</span>
+          <span id="log-label">Mark this pharmacy</span>
         </button>
       </div>
     </div>
   </main>
+</div>
+
+<!-- Modal -->
+<div class="modal-backdrop" id="pharmacies-modal">
+  <div class="modal-surface">
+    <div class="modal-header">
+      <h2>Logged Pharmacies</h2>
+      <button class="close-btn" id="close-modal-btn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <table class="pharmacy-table">
+        <thead>
+          <tr><th>Name</th><th>Latitude</th><th>Longitude</th></tr>
+        </thead>
+        <tbody id="pharmacies-list-body">
+        </tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -214,6 +266,11 @@
   const trackLabel  = document.getElementById("track-label");
   const banner      = document.getElementById("proximity-banner");
   const bannerText  = document.getElementById("proximity-text");
+  
+  const listBtn     = document.getElementById("list-pharmacies-btn");
+  const modal       = document.getElementById("pharmacies-modal");
+  const closeModal  = document.getElementById("close-modal-btn");
+  const listBody    = document.getElementById("pharmacies-list-body");
 
   // ── State ───────────────────────────────────────────────────────────────────
   let subscriptionId   = null;   // from /push/subscribe
@@ -293,14 +350,14 @@
     const bounds = [];
     places.forEach((p) => {
       const m = L.marker([p.latitude, p.longitude], { icon: pinIcon() }).addTo(map);
-      const when = new Date(p.visited_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      const when = new Date(p.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
       m.bindPopup(
+        `<div style="font-weight:bold; margin-bottom: 4px; font-size: 0.95rem;">${p.name}</div>` +
         `<div class="popup-coords">${p.latitude.toFixed(5)}°, ${p.longitude.toFixed(5)}°</div>` +
-        `<div class="popup-time">${when}</div>`
+        `<div class="popup-time">Added: ${when}</div>`
       );
       savedMarkers.push(m);
 
-      // 500m radius circle so you can see the alert zone on the map
       const circle = L.circle([p.latitude, p.longitude], {
         radius: PROXIMITY_RADIUS_M,
         color: "#5b9bd5", weight: 1, opacity: 0.4,
@@ -316,18 +373,19 @@
 
   async function loadPlaces() {
     try {
-      const res = await apiFetch("/locations");
+      // Changed from /locations to /leads to load our Pharmacy leads
+      const res = await apiFetch("/leads");
       if (!res.ok) throw new Error("Server returned " + res.status);
       renderPlaces(await res.json());
     } catch (e) {
-      setStatus("Couldn't load places: " + e.message, "error");
+      setStatus("Couldn't load pharmacies: " + e.message, "error");
     }
   }
 
-  // ── Log current position ────────────────────────────────────────────────────
+  // ── Log current position (Pharmacy feature) ──────────────────────────────────
   function geoErrorMsg(err) {
     return [
-      "", // code 0 unused
+      "",
       "Location access is blocked. Enable it for this site in browser settings.",
       "Your location is unavailable right now. Try again.",
       "Finding your location took too long. Try again.",
@@ -338,33 +396,61 @@
     if (!("geolocation" in navigator)) {
       setStatus("This browser doesn't support location access.", "error"); return;
     }
+    
+    // Popup prompt asking for pharmacy name
+    const pharmacyName = prompt("Enter the name of the pharmacy:");
+    if (!pharmacyName || pharmacyName.trim().length < 2) {
+      if (pharmacyName !== null) { // if not explicitly canceled
+         setStatus("Valid pharmacy name is required (at least 2 characters).", "error");
+      }
+      return;
+    }
+
     logBtn.disabled = true; logBtn.classList.add("is-loading");
     logLabel.textContent = "Finding you\u2026";
 
     navigator.geolocation.getCurrentPosition(async (pos) => {
       try {
-        const res = await apiFetch("/locations", {
+        const res = await apiFetch("/register_leads", {
           method: "POST",
-          body: JSON.stringify({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+          body: JSON.stringify({ name: pharmacyName.trim(), latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
         });
         if (!res.ok) { const b = await res.json(); throw new Error(b.detail || res.status); }
-        setStatus(`Logged ${pos.coords.latitude.toFixed(4)}°, ${pos.coords.longitude.toFixed(4)}°`, "success");
+        setStatus(`Logged ${pharmacyName.trim()}`, "success");
         await loadPlaces();
       } catch (e) {
         setStatus("Couldn't save: " + e.message, "error");
       } finally {
         logBtn.disabled = false; logBtn.classList.remove("is-loading");
-        logLabel.textContent = "Mark this place";
+        logLabel.textContent = "Mark this pharmacy";
       }
     }, (err) => {
       logBtn.disabled = false; logBtn.classList.remove("is-loading");
-      logLabel.textContent = "Mark this place";
+      logLabel.textContent = "Mark this pharmacy";
       setStatus(geoErrorMsg(err), "error");
     }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
   });
 
-  // ── Push notification setup ─────────────────────────────────────────────────
+  // ── UI Triggers for List Modal ──────────────────────────────────────────────
+  listBtn.addEventListener("click", () => {
+    listBody.innerHTML = "";
+    currentPlaces.forEach((p) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${p.name}</td>
+        <td>${p.latitude.toFixed(5)}°</td>
+        <td>${p.longitude.toFixed(5)}°</td>
+      `;
+      listBody.appendChild(tr);
+    });
+    modal.classList.add("is-visible");
+  });
 
+  closeModal.addEventListener("click", () => {
+    modal.classList.remove("is-visible");
+  });
+
+  // ── Push notification setup ─────────────────────────────────────────────────
   function urlBase64ToUint8Array(base64String) {
     const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
     const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
@@ -402,8 +488,8 @@
   // ── Proximity banner ────────────────────────────────────────────────────────
   function showProximityBanner(nearbyCount, closestName) {
     bannerText.textContent = nearbyCount === 1
-      ? `You're within ${PROXIMITY_RADIUS_M}m of a saved place`
-      : `You're near ${nearbyCount} saved places`;
+      ? `You're within ${PROXIMITY_RADIUS_M}m of a saved pharmacy`
+      : `You're near ${nearbyCount} saved pharmacies`;
     banner.classList.add("is-visible");
     clearTimeout(bannerTimer);
     bannerTimer = setTimeout(() => banner.classList.remove("is-visible"), BANNER_DISMISS_MS);
@@ -411,21 +497,16 @@
 
   // ── Proximity check (called on each position update, throttled) ─────────────
   async function checkProximity(lat, lon) {
-    // Client-side pre-filter: don't even call the server if no places are close.
-    // This saves bandwidth when you're nowhere near any saved place.
     const anyNearby = currentPlaces.some(
       (p) => haversineMeters(lat, lon, p.latitude, p.longitude) <= PROXIMITY_RADIUS_M
     );
     if (!anyNearby) return;
 
-    // Show the in-app banner immediately (no round-trip needed).
     const nearby = currentPlaces.filter(
       (p) => haversineMeters(lat, lon, p.latitude, p.longitude) <= PROXIMITY_RADIUS_M
     );
     showProximityBanner(nearby.length);
 
-    // If we have a push subscription, tell the server so it can fire
-    // a real push notification (survives tab switching, screen-off on desktop).
     if (!subscriptionId) return;
 
     try {
@@ -438,12 +519,10 @@
         }),
       });
       if (res.status === 410) {
-        // Subscription expired — clear and re-subscribe next time tracking starts
         console.warn("Push subscription expired, clearing");
         subscriptionId = null;
       }
     } catch (e) {
-      // Non-fatal: the in-app banner already showed. Log silently.
       console.warn("Proximity check API error:", e.message);
     }
   }
@@ -452,14 +531,12 @@
   function onPositionUpdate(pos) {
     const { latitude: lat, longitude: lon } = pos.coords;
 
-    // Update the live dot on the map
     if (!liveMarker) {
       liveMarker = L.marker([lat, lon], { icon: liveDotIcon(), zIndexOffset: 1000 }).addTo(map);
     } else {
       liveMarker.setLatLng([lat, lon]);
     }
 
-    // Throttle proximity checks to once per CHECK_INTERVAL_MS
     const now = Date.now();
     if (now - lastCheckTime >= CHECK_INTERVAL_MS) {
       lastCheckTime = now;
@@ -477,7 +554,6 @@
       setStatus("This browser doesn't support location access.", "error"); return;
     }
 
-    // Ask for notification permission before starting
     let notifGranted = false;
     if ("Notification" in window) {
       const perm = Notification.permission === "granted"
@@ -489,7 +565,6 @@
       }
     }
 
-    // Register service worker + push subscription
     if (notifGranted && "serviceWorker" in navigator) {
       try {
         const reg = await navigator.serviceWorker.register("/sw.js");
@@ -499,7 +574,6 @@
       }
     }
 
-    // Start watchPosition
     watchId = navigator.geolocation.watchPosition(
       onPositionUpdate,
       (err) => { setStatus(geoErrorMsg(err), "error"); stopTracking(); },
@@ -522,7 +596,6 @@
     banner.classList.remove("is-visible");
   }
 
-  // ── HTTPS guard ─────────────────────────────────────────────────────────────
   if (!window.isSecureContext) {
     setStatus("Needs HTTPS (or localhost) for location access.", "error");
     logBtn.disabled = true; trackBtn.disabled = true;
