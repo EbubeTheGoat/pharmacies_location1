@@ -17,7 +17,7 @@
 //   iOS      : watchPosition stops when the screen locks — Apple restriction
 //              on all web apps, no workaround without a native app
 
-const CACHE_NAME = "places-v1"
+const CACHE_NAME = "places-v1";
 
 // ── Install / Activate ────────────────────────────────────────────────────────
 
