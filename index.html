@@ -487,11 +487,9 @@
 
   // ── Proximity banner ────────────────────────────────────────────────────────
   function showProximityBanner(nearbyCount, closestName) {
-    if (nearbyCount === 1 && closestName) {
-      bannerText.textContent = `You're within ${PROXIMITY_RADIUS_M}m of ${closestName}`;
-    } else {
-      bannerText.textContent = `You're near ${nearbyCount} saved pharmacies`;
-    }
+    bannerText.textContent = nearbyCount === 1
+      ? `You're within ${PROXIMITY_RADIUS_M}m of a saved pharmacy`
+      : `You're near ${nearbyCount} saved pharmacies`;
     banner.classList.add("is-visible");
     clearTimeout(bannerTimer);
     bannerTimer = setTimeout(() => banner.classList.remove("is-visible"), BANNER_DISMISS_MS);
@@ -507,10 +505,7 @@
     const nearby = currentPlaces.filter(
       (p) => haversineMeters(lat, lon, p.latitude, p.longitude) <= PROXIMITY_RADIUS_M
     );
-    
-    // Extract name of the nearest pharmacy
-    const closestName = nearby.length > 0 ? nearby[0].name : "";
-    showProximityBanner(nearby.length, closestName);
+    showProximityBanner(nearby.length);
 
     if (!subscriptionId) return;
 
