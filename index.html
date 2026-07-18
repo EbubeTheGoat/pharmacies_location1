@@ -1,614 +1,168 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Pharmacy Tracker</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<style>
-  :root {
-    --ink:          #13171c;
-    --surface:      #1c2229;
-    --surface-2:    #252c35;
-    --parchment:    #ece5d6;
-    --parchment-dim:#9b9587;
-    --brass:        #c4883a;
-    --brass-bright: #dba24f;
-    --contour:      #7c9c77;
-    --alert:        #5b9bd5;
-    --danger:       #c1604e;
-    --rule:         #323a44;
-    --font-display: 'Fraunces', Georgia, serif;
-    --font-mono:    'IBM Plex Mono', ui-monospace, monospace;
-    --font-body:    'IBM Plex Sans', system-ui, sans-serif;
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; background: var(--ink); color: var(--parchment); font-family: var(--font-body); overscroll-behavior: none; }
+import json
+import math
+import os
 
-  .app { position: fixed; inset: 0; display: flex; flex-direction: column; height: 100dvh; }
+from fastapi import APIRouter, Depends, HTTPException
+from pywebpush import WebPushException, webpush
+from sqlalchemy.orm import Session
 
-  /* ── Top bar ── */
-  .topbar {
-    position: relative; z-index: 20;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: calc(env(safe-area-inset-top,0px) + 14px) 18px 14px;
-    background: var(--surface); border-bottom: 1px solid var(--rule);
-  }
-  .topbar-title { display: flex; align-items: center; gap: 10px; }
-  .topbar-mark  { width: 30px; height: 30px; flex: none; }
-  .topbar h1    { font-family: var(--font-display); font-weight: 600; font-size: 1.28rem; margin: 0; color: var(--parchment); }
-  
-  .topbar-actions { display: flex; gap: 10px; align-items: center; }
-  .topbar-count { font-family: var(--font-mono); font-size: 0.78rem; color: var(--brass-bright); border: 1px solid var(--rule); border-radius: 999px; padding: 5px 12px; white-space: nowrap; }
+from cache import get_user_cache, set_user_cache
+from database import get_db
+from logger_config import get_logger
+from model import PharmacyLead, PushSubscription
+from schema import ProximityCheckPayload, PushSubscribeOut, PushSubscribePayload
 
-  /* ── Proximity banner ── */
-  .proximity-banner {
-    z-index: 19; display: flex; align-items: center; gap: 10px;
-    padding: 10px 18px; background: rgba(91,155,213,0.15);
-    border-bottom: 1px solid rgba(91,155,213,0.3);
-    font-size: 0.86rem; color: var(--alert);
-    max-height: 0; overflow: hidden; opacity: 0;
-    transition: max-height 300ms ease, opacity 300ms ease, padding 300ms ease;
-  }
-  .proximity-banner.is-visible { max-height: 60px; opacity: 1; }
-  .proximity-banner svg { flex: none; width: 18px; height: 18px; }
+logger = get_logger("push")
+router = APIRouter(tags=["Push Notifications"])
 
-  /* ── Map ── */
-  main { position: relative; flex: 1; min-height: 0; }
-  #map { position: absolute; inset: 0; }
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
+VAPID_PUBLIC_KEY  = os.getenv("VAPID_PUBLIC_KEY")
+VAPID_EMAIL       = os.getenv("VAPID_EMAIL", "mailto:you@example.com")
 
-  .leaflet-popup-content-wrapper { background: var(--surface); color: var(--parchment); border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
-  .leaflet-popup-tip { background: var(--surface); }
-  .leaflet-popup-content { margin: 12px 14px; }
-  .popup-coords { font-family: var(--font-mono); font-size: 0.85rem; color: var(--brass-bright); }
-  .popup-time   { font-family: var(--font-body); font-size: 0.76rem; color: var(--parchment-dim); margin-top: 3px; }
+COOLDOWN_SECONDS = 1_800
 
-  /* ── Empty state ── */
-  .empty-state {
-    position: absolute; inset: 0; z-index: 15;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    text-align: center; padding: 0 40px; pointer-events: none;
-    background: linear-gradient(180deg, rgba(19,23,28,.35), rgba(19,23,28,.7));
-  }
-  .empty-state svg { width: 46px; height: 46px; opacity: .5; margin-bottom: 14px; }
-  .empty-state p  { margin: 0; }
-  .empty-title    { font-family: var(--font-display); font-size: 1.15rem; color: var(--parchment); }
-  .empty-sub      { margin-top: 6px; font-size: 0.88rem; color: var(--parchment-dim); max-width: 30ch; }
+if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+    logger.warning(
+        "VAPID_PRIVATE_KEY / VAPID_PUBLIC_KEY not set. "
+        "Push notifications will not be sent. "
+        "Run `python generate_vapid_keys.py` to create them."
+    )
 
-  /* ── Controls ── */
-  .controls {
-    position: absolute; left: 0; right: 0; bottom: 0; z-index: 20;
-    display: flex; flex-direction: column; align-items: center; gap: 10px;
-    padding: 0 18px calc(env(safe-area-inset-bottom,0px) + 22px);
-    pointer-events: none;
-  }
-  .status {
-    pointer-events: none; font-size: 0.82rem; font-family: var(--font-mono);
-    padding: 8px 14px; border-radius: 8px; background: var(--surface); border: 1px solid var(--rule);
-    color: var(--parchment); opacity: 0; transform: translateY(4px);
-    transition: opacity 220ms ease, transform 220ms ease;
-    max-width: 88vw; text-align: center;
-  }
-  .status.is-visible { opacity: 1; transform: translateY(0); }
-  .status.status-error   { color: var(--danger); border-color: var(--danger); }
-  .status.status-success { color: var(--contour); border-color: var(--contour); }
-  .status.status-info    { color: var(--alert);   border-color: var(--alert);   }
+# ── Haversine ─────────────────────────────────────────────────────────────────
 
-  /* ── Button row ── */
-  .btn-row { pointer-events: auto; display: flex; gap: 10px; align-items: center; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 8px; border: none; cursor: pointer;
-    font-family: var(--font-body); font-weight: 600; font-size: 0.92rem;
-    padding: 14px 20px; border-radius: 999px;
-    box-shadow: 0 10px 26px rgba(0,0,0,.4);
-    transition: background 150ms ease, transform 150ms ease;
-  }
-  .btn:active { transform: scale(0.97); }
-  .btn:focus-visible { outline: 2px solid var(--parchment); outline-offset: 3px; }
-  .btn:disabled { opacity: 0.6; cursor: progress; }
-  .btn svg { width: 18px; height: 18px; flex: none; }
+def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6_371_000  # Earth radius in metres
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi    = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    )
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-  .btn-log     { background: var(--brass);    color: var(--ink); }
-  .btn-log:hover { background: var(--brass-bright); }
-  .btn-track   { background: var(--surface-2); color: var(--parchment); border: 1px solid var(--rule); }
-  .btn-track:hover { border-color: var(--alert); color: var(--alert); }
-  .btn-track.is-tracking { background: rgba(91,155,213,0.15); border-color: var(--alert); color: var(--alert); }
+# ── Push sender ───────────────────────────────────────────────────────────────
 
-  .btn.is-loading svg { animation: spin 900ms linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+def _send_push(subscription: PushSubscription, place: PharmacyLead, distance_m: float) -> bool:
+    if not VAPID_PRIVATE_KEY or not VAPID_PUBLIC_KEY:
+        raise RuntimeError("VAPID keys not configured")
 
-  /* ── Modal (Pharmacies List) ── */
-  .modal-backdrop {
-    position: fixed; inset: 0; z-index: 100;
-    background: rgba(19, 23, 28, 0.85);
-    backdrop-filter: blur(4px);
-    display: none; align-items: center; justify-content: center;
-    padding: 20px;
-  }
-  .modal-backdrop.is-visible { display: flex; }
-  .modal-surface {
-    background: var(--surface); border: 1px solid var(--rule);
-    border-radius: 12px; width: 100%; max-width: 500px;
-    max-height: 80vh; display: flex; flex-direction: column;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-  }
-  .modal-header {
-    padding: 16px 20px; border-bottom: 1px solid var(--rule);
-    display: flex; justify-content: space-between; align-items: center;
-  }
-  .modal-header h2 { margin: 0; font-family: var(--font-display); font-size: 1.2rem; color: var(--parchment); }
-  .close-btn { background: none; border: none; color: var(--parchment-dim); cursor: pointer; font-size: 1.5rem; line-height: 1; padding: 0; }
-  .close-btn:hover { color: var(--danger); }
-  .modal-body { padding: 0; overflow-y: auto; }
-  .pharmacy-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
-  .pharmacy-table th { position: sticky; top: 0; background: var(--surface-2); padding: 12px 20px; color: var(--parchment-dim); font-weight: 500; border-bottom: 1px solid var(--rule); }
-  .pharmacy-table td { padding: 12px 20px; border-bottom: 1px solid var(--rule); color: var(--parchment); }
-  .pharmacy-table tr:last-child td { border-bottom: none; }
+    payload = json.dumps({
+        "title": "You're near a pharmacy!",
+        "body":  f"{distance_m:.0f}m away · {place.name}",
+        "placeId": place.id,
+    })
 
-  @media (prefers-reduced-motion: reduce) {
-    .btn.is-loading svg { animation: none; }
-    .status { transition: none; }
-    .proximity-banner { transition: none; }
-  }
+    try:
+        webpush(
+            subscription_info={
+                "endpoint": subscription.endpoint,
+                "keys": {
+                    "p256dh": subscription.p256dh,
+                    "auth":   subscription.auth,
+                },
+            },
+            data=payload,
+            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_claims={"sub": VAPID_EMAIL},
+        )
+        return True
 
-  .leaflet-control-attribution { background: rgba(28,34,41,.75) !important; color: var(--parchment-dim) !important; }
-  .leaflet-control-attribution a { color: var(--brass-bright) !important; }
+    except WebPushException as e:
+        if e.response is not None and e.response.status_code == 410:
+            logger.warning(f"Push subscription {subscription.id} expired (410) — should be deleted")
+            return False
+        logger.error(f"WebPush failed for subscription {subscription.id}: {e}")
+        return False
 
-  /* live position dot */
-  .live-dot { width:16px; height:16px; border-radius:50%; background:var(--alert); border:2px solid #fff; box-shadow:0 0 0 4px rgba(91,155,213,.3); }
-</style>
-</head>
-<body>
-<div class="app">
-  <header class="topbar">
-    <div class="topbar-title">
-      <svg class="topbar-mark" viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="15" cy="15" r="13" stroke="#c4883a" stroke-width="1.4"/>
-        <circle cx="15" cy="15" r="2.4" fill="#c4883a"/>
-        <path d="M15 2v6M15 22v6M2 15h6M22 15h6" stroke="#c4883a" stroke-width="1.4"/>
-      </svg>
-      <h1>Pharmacy Tracker</h1>
-    </div>
-    <div class="topbar-actions">
-      <div class="topbar-count" id="place-count">0 logged</div>
-      <button class="btn btn-track" id="list-pharmacies-btn" style="padding: 6px 12px; font-size: 0.8rem; box-shadow: none;">View All</button>
-    </div>
-  </header>
+# ── Routes ────────────────────────────────────────────────────────────────────
 
-  <!-- Shown when user is within 500m of a saved place -->
-  <div class="proximity-banner" id="proximity-banner" role="alert" aria-live="assertive">
-    <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.6"/>
-      <circle cx="10" cy="10" r="2" fill="currentColor"/>
-      <path d="M10 1v3M10 16v3M1 10h3M16 10h3" stroke="currentColor" stroke-width="1.4"/>
-    </svg>
-    <span id="proximity-text">You're near a saved pharmacy</span>
-  </div>
+@router.get("/push/vapid-public-key")
+def get_vapid_public_key():
+    if not VAPID_PUBLIC_KEY:
+        raise HTTPException(status_code=503, detail="Push notifications not configured")
+    return {"public_key": VAPID_PUBLIC_KEY}
 
-  <main>
-    <div id="map"></div>
+@router.post("/push/subscribe", response_model=PushSubscribeOut)
+def subscribe(payload: PushSubscribePayload, db: Session = Depends(get_db)):
+    existing = (
+        db.query(PushSubscription)
+        .filter(PushSubscription.endpoint == payload.endpoint)
+        .first()
+    )
 
-    <div class="empty-state" id="empty-state">
-      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M24 4C14 4 7 12 7 21c0 12 17 23 17 23s17-11 17-23c0-9-7-17-17-17z" stroke="#ece5d6" stroke-width="1.6"/>
-        <circle cx="24" cy="21" r="6" stroke="#ece5d6" stroke-width="1.6"/>
-      </svg>
-      <p class="empty-title">No pharmacies logged yet</p>
-      <p class="empty-sub">Tap "Mark this pharmacy" to log where you are right now.</p>
-    </div>
+    if existing:
+        existing.p256dh = payload.p256dh
+        existing.auth   = payload.auth
+        db.commit()
+        db.refresh(existing)
+        return {"subscription_id": existing.id}
 
-    <div class="controls">
-      <div class="status" id="status" role="status" aria-live="polite"></div>
-      <div class="btn-row">
-        <button class="btn btn-track" id="track-btn" type="button">
-          <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="10" cy="10" r="3" fill="currentColor"/>
-            <circle cx="10" cy="10" r="7" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 2"/>
-          </svg>
-          <span id="track-label">Start tracking</span>
-        </button>
-        <button class="btn btn-log" id="log-btn" type="button">
-          <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.6"/>
-            <circle cx="10" cy="10" r="2" fill="currentColor"/>
-            <path d="M10 1v3M10 16v3M1 10h3M16 10h3" stroke="currentColor" stroke-width="1.6"/>
-          </svg>
-          <span id="log-label">Mark this pharmacy</span>
-        </button>
-      </div>
-    </div>
-  </main>
-</div>
+    sub = PushSubscription(
+        endpoint=payload.endpoint,
+        p256dh=payload.p256dh,
+        auth=payload.auth,
+    )
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+    logger.info(f"New push subscription registered: id={sub.id}")
+    return {"subscription_id": sub.id}
 
-<!-- Modal -->
-<div class="modal-backdrop" id="pharmacies-modal">
-  <div class="modal-surface">
-    <div class="modal-header">
-      <h2>Logged Pharmacies</h2>
-      <button class="close-btn" id="close-modal-btn">&times;</button>
-    </div>
-    <div class="modal-body">
-      <table class="pharmacy-table">
-        <thead>
-          <tr><th>Name</th><th>Latitude</th><th>Longitude</th></tr>
-        </thead>
-        <tbody id="pharmacies-list-body">
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
+@router.post("/push/check-proximity")
+def check_proximity(payload: ProximityCheckPayload, db: Session = Depends(get_db)):
+    subscription = db.get(PushSubscription, payload.subscription_id)
+    if not subscription:
+        raise HTTPException(status_code=404, detail="Subscription not found. Re-subscribe.")
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script>
-(function () {
-  "use strict";
+    places = db.query(PharmacyLead).all()
 
-  // ── Config ──────────────────────────────────────────────────────────────────
-  const API_BASE             = "https://pharmacies-location.onrender.com";
-  const API_KEY              = "";          // set if API_SECRET is configured on the server
-  const PROXIMITY_RADIUS_M   = 500;         // metres
-  const CHECK_INTERVAL_MS    = 30_000;      // how often to call /push/check-proximity (ms)
-  const BANNER_DISMISS_MS    = 8_000;       // how long the proximity banner stays visible
+    within_range = []
+    for place in places:
+        dist = haversine_meters(
+            payload.latitude, payload.longitude,
+            place.latitude,   place.longitude,
+        )
+        if dist <= payload.radius:
+            within_range.append((place, dist))
 
-  const LAGOS = [6.5244, 3.3792];
-
-  // ── DOM refs ────────────────────────────────────────────────────────────────
-  const statusEl    = document.getElementById("status");
-  const countEl     = document.getElementById("place-count");
-  const emptyEl     = document.getElementById("empty-state");
-  const logBtn      = document.getElementById("log-btn");
-  const logLabel    = document.getElementById("log-label");
-  const trackBtn    = document.getElementById("track-btn");
-  const trackLabel  = document.getElementById("track-label");
-  const banner      = document.getElementById("proximity-banner");
-  const bannerText  = document.getElementById("proximity-text");
-  
-  const listBtn     = document.getElementById("list-pharmacies-btn");
-  const modal       = document.getElementById("pharmacies-modal");
-  const closeModal  = document.getElementById("close-modal-btn");
-  const listBody    = document.getElementById("pharmacies-list-body");
-
-  // ── State ───────────────────────────────────────────────────────────────────
-  let subscriptionId   = null;   // from /push/subscribe
-  let watchId          = null;   // from navigator.geolocation.watchPosition
-  let lastCheckTime    = 0;
-  let bannerTimer      = null;
-  let liveMarker       = null;   // the blue dot showing current position
-  let savedMarkers     = [];
-  let radiusCircles    = [];
-  let isTracking       = false;
-
-  // ── Status helper ───────────────────────────────────────────────────────────
-  let statusTimer = null;
-  function setStatus(msg, kind, persistent) {
-    statusEl.textContent = msg;
-    statusEl.className = "status is-visible" + (kind ? " status-" + kind : "");
-    clearTimeout(statusTimer);
-    if (!persistent) {
-      statusTimer = setTimeout(() => statusEl.classList.remove("is-visible"), 4500);
-    }
-  }
-
-  // ── Fetch helper ────────────────────────────────────────────────────────────
-  function apiFetch(path, opts) {
-    const h = { "Content-Type": "application/json" };
-    if (API_KEY) h["X-API-Key"] = API_KEY;
-    return fetch(API_BASE + path, { ...opts, headers: { ...h, ...(opts && opts.headers) } });
-  }
-
-  // ── Haversine (mirrors the server-side formula) ─────────────────────────────
-  function haversineMeters(lat1, lon1, lat2, lon2) {
-    const R = 6_371_000;
-    const toRad = (d) => (d * Math.PI) / 180;
-    const phi1 = toRad(lat1), phi2 = toRad(lat2);
-    const dPhi = toRad(lat2 - lat1), dLam = toRad(lon2 - lon1);
-    const a = Math.sin(dPhi/2)**2 + Math.cos(phi1)*Math.cos(phi2)*Math.sin(dLam/2)**2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
-
-  // ── Map setup ───────────────────────────────────────────────────────────────
-  const map = L.map("map", { zoomControl: true }).setView(LAGOS, 12);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    maxZoom: 19,
-  }).addTo(map);
-
-  function pinIcon(color) {
-    const c = color || "#c4883a";
-    return L.divIcon({
-      className: "",
-      html: `<svg width="26" height="34" viewBox="0 0 26 34" xmlns="http://www.w3.org/2000/svg" style="filter:drop-shadow(0 3px 4px rgba(0,0,0,.45))"><path d="M13 0L26 13L13 34L0 13Z" fill="${c}" stroke="#13171c" stroke-width="1.2"/><circle cx="13" cy="13" r="4" fill="#13171c"/></svg>`,
-      iconSize: [26, 34], iconAnchor: [13, 30], popupAnchor: [0, -28],
-    });
-  }
-
-  function liveDotIcon() {
-    return L.divIcon({
-      className: "",
-      html: '<div class="live-dot"></div>',
-      iconSize: [16, 16], iconAnchor: [8, 8],
-    });
-  }
-
-  // ── Render saved places ─────────────────────────────────────────────────────
-  let currentPlaces = [];
-
-  function renderPlaces(places) {
-    currentPlaces = places;
-    savedMarkers.forEach((m) => map.removeLayer(m));
-    radiusCircles.forEach((c) => map.removeLayer(c));
-    savedMarkers = []; radiusCircles = [];
-
-    countEl.textContent = places.length + " logged";
-    emptyEl.style.display = places.length === 0 ? "flex" : "none";
-    if (places.length === 0) return;
-
-    const bounds = [];
-    places.forEach((p) => {
-      const m = L.marker([p.latitude, p.longitude], { icon: pinIcon() }).addTo(map);
-      const when = new Date(p.created_at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-      m.bindPopup(
-        `<div style="font-weight:bold; margin-bottom: 4px; font-size: 0.95rem;">${p.name}</div>` +
-        `<div class="popup-coords">${p.latitude.toFixed(5)}°, ${p.longitude.toFixed(5)}°</div>` +
-        `<div class="popup-time">Added: ${when}</div>`
-      );
-      savedMarkers.push(m);
-
-      const circle = L.circle([p.latitude, p.longitude], {
-        radius: PROXIMITY_RADIUS_M,
-        color: "#5b9bd5", weight: 1, opacity: 0.4,
-        fillColor: "#5b9bd5", fillOpacity: 0.06,
-      }).addTo(map);
-      radiusCircles.push(circle);
-
-      bounds.push([p.latitude, p.longitude]);
-    });
-
-    map.fitBounds(bounds, { padding: [60, 60], maxZoom: 14 });
-  }
-
-  async function loadPlaces() {
-    try {
-      // Changed from /locations to /leads to load our Pharmacy leads
-      const res = await apiFetch("/leads");
-      if (!res.ok) throw new Error("Server returned " + res.status);
-      renderPlaces(await res.json());
-    } catch (e) {
-      setStatus("Couldn't load pharmacies: " + e.message, "error");
-    }
-  }
-
-  // ── Log current position (Pharmacy feature) ──────────────────────────────────
-  function geoErrorMsg(err) {
-    return [
-      "",
-      "Location access is blocked. Enable it for this site in browser settings.",
-      "Your location is unavailable right now. Try again.",
-      "Finding your location took too long. Try again.",
-    ][err.code] || "Could not get your location.";
-  }
-
-  logBtn.addEventListener("click", () => {
-    if (!("geolocation" in navigator)) {
-      setStatus("This browser doesn't support location access.", "error"); return;
-    }
+    sent = 0
+    expired = False
     
-    // Popup prompt asking for pharmacy name
-    const pharmacyName = prompt("Enter the name of the pharmacy:");
-    if (!pharmacyName || pharmacyName.trim().length < 2) {
-      if (pharmacyName !== null) { // if not explicitly canceled
-         setStatus("Valid pharmacy name is required (at least 2 characters).", "error");
-      }
-      return;
+    for place, dist in within_range:
+        cooldown_key = f"proximity:{payload.subscription_id}:{place.id}"
+        if get_user_cache(cooldown_key):
+            continue
+
+        # Handle Browser Push Notification
+        try:
+            ok = _send_push(subscription, place, dist)
+            if ok:
+                sent += 1
+                set_user_cache(cooldown_key, {"alerted": True}, ttl=COOLDOWN_SECONDS)
+                logger.info(
+                    f"Proximity alert sent: subscription={payload.subscription_id} "
+                    f"place={place.id} distance={dist:.0f}m"
+                )
+            else:
+                expired = True
+        except RuntimeError as e:
+            logger.error(f"Push not sent for {place.id}: {e}")
+            continue
+
+    # Defer the 410 response until all loops have run
+    if expired:
+        raise HTTPException(
+            status_code=410,
+            detail="Push subscription expired. Please re-subscribe.",
+        )
+     # Create a list of names for the frontend
+    nearby_names = [place.name for place, dist in within_range]
+
+    return {
+        "places_in_range": len(within_range),
+        "notifications_sent": sent,
+        "nearby_pharmacies": nearby_names  # We are now sending the names to the frontend!
     }
 
-    logBtn.disabled = true; logBtn.classList.add("is-loading");
-    logLabel.textContent = "Finding you\u2026";
-
-    navigator.geolocation.getCurrentPosition(async (pos) => {
-      try {
-        const res = await apiFetch("/register_leads", {
-          method: "POST",
-          body: JSON.stringify({ name: pharmacyName.trim(), latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
-        });
-        if (!res.ok) { const b = await res.json(); throw new Error(b.detail || res.status); }
-        setStatus(`Logged ${pharmacyName.trim()}`, "success");
-        await loadPlaces();
-      } catch (e) {
-        setStatus("Couldn't save: " + e.message, "error");
-      } finally {
-        logBtn.disabled = false; logBtn.classList.remove("is-loading");
-        logLabel.textContent = "Mark this pharmacy";
-      }
-    }, (err) => {
-      logBtn.disabled = false; logBtn.classList.remove("is-loading");
-      logLabel.textContent = "Mark this pharmacy";
-      setStatus(geoErrorMsg(err), "error");
-    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
-  });
-
-  // ── UI Triggers for List Modal ──────────────────────────────────────────────
-  listBtn.addEventListener("click", () => {
-    listBody.innerHTML = "";
-    currentPlaces.forEach((p) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${p.name}</td>
-        <td>${p.latitude.toFixed(5)}°</td>
-        <td>${p.longitude.toFixed(5)}°</td>
-      `;
-      listBody.appendChild(tr);
-    });
-    modal.classList.add("is-visible");
-  });
-
-  closeModal.addEventListener("click", () => {
-    modal.classList.remove("is-visible");
-  });
-
-  // ── Push notification setup ─────────────────────────────────────────────────
-  function urlBase64ToUint8Array(base64String) {
-    const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-    const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-    const raw = atob(base64);
-    return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
-  }
-
-  async function setupPushSubscription(swReg) {
-    try {
-      const keyRes = await apiFetch("/push/vapid-public-key");
-      if (!keyRes.ok) { console.warn("Push not configured on server"); return null; }
-      const { public_key } = await keyRes.json();
-
-      const existing = await swReg.pushManager.getSubscription();
-      const sub = existing || await swReg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(public_key),
-      });
-
-      const keys = sub.toJSON().keys;
-      const res = await apiFetch("/push/subscribe", {
-        method: "POST",
-        body: JSON.stringify({ endpoint: sub.endpoint, p256dh: keys.p256dh, auth: keys.auth }),
-      });
-      if (!res.ok) throw new Error("Subscribe endpoint returned " + res.status);
-      const { subscription_id } = await res.json();
-      console.log("Push subscription registered, id =", subscription_id);
-      return subscription_id;
-    } catch (e) {
-      console.warn("Push subscription failed:", e.message);
-      return null;
-    }
-  }
-
-  // ── Proximity banner ────────────────────────────────────────────────────────
-  function showProximityBanner(nearbyCount, closestName) {
-    if (nearbyCount === 1 && closestName) {
-      bannerText.textContent = `You're within ${PROXIMITY_RADIUS_M}m of ${closestName}`;
-    } else {
-      bannerText.textContent = `You're near ${nearbyCount} saved pharmacies`;
-    }
-    banner.classList.add("is-visible");
-    clearTimeout(bannerTimer);
-    bannerTimer = setTimeout(() => banner.classList.remove("is-visible"), BANNER_DISMISS_MS);
-  }
-
-  // ── Proximity check (called on each position update, throttled) ─────────────
-  async function checkProximity(lat, lon) {
-    const anyNearby = currentPlaces.some(
-      (p) => haversineMeters(lat, lon, p.latitude, p.longitude) <= PROXIMITY_RADIUS_M
-    );
-    if (!anyNearby) return;
-
-    const nearby = currentPlaces.filter(
-      (p) => haversineMeters(lat, lon, p.latitude, p.longitude) <= PROXIMITY_RADIUS_M
-    );
     
-    // Extract name of the nearest pharmacy
-    const closestName = nearby.length > 0 ? nearby[0].name : "";
-    showProximityBanner(nearby.length, closestName);
-
-    if (!subscriptionId) return;
-
-    try {
-      const res = await apiFetch("/push/check-proximity", {
-        method: "POST",
-        body: JSON.stringify({
-          latitude: lat, longitude: lon,
-          subscription_id: subscriptionId,
-          radius: PROXIMITY_RADIUS_M,
-        }),
-      });
-      if (res.status === 410) {
-        console.warn("Push subscription expired, clearing");
-        subscriptionId = null;
-      }
-    } catch (e) {
-      console.warn("Proximity check API error:", e.message);
-    }
-  }
-
-  // ── Live position handler ───────────────────────────────────────────────────
-  function onPositionUpdate(pos) {
-    const { latitude: lat, longitude: lon } = pos.coords;
-
-    if (!liveMarker) {
-      liveMarker = L.marker([lat, lon], { icon: liveDotIcon(), zIndexOffset: 1000 }).addTo(map);
-    } else {
-      liveMarker.setLatLng([lat, lon]);
-    }
-
-    const now = Date.now();
-    if (now - lastCheckTime >= CHECK_INTERVAL_MS) {
-      lastCheckTime = now;
-      checkProximity(lat, lon);
-    }
-  }
-
-  // ── Tracking toggle ─────────────────────────────────────────────────────────
-  trackBtn.addEventListener("click", async () => {
-    if (isTracking) {
-      stopTracking(); return;
-    }
-
-    if (!("geolocation" in navigator)) {
-      setStatus("This browser doesn't support location access.", "error"); return;
-    }
-
-    let notifGranted = false;
-    if ("Notification" in window) {
-      const perm = Notification.permission === "granted"
-        ? "granted"
-        : await Notification.requestPermission();
-      notifGranted = perm === "granted";
-      if (!notifGranted) {
-        setStatus("Notifications blocked — you'll still see in-app alerts.", "info");
-      }
-    }
-
-    if (notifGranted && "serviceWorker" in navigator) {
-      try {
-        const reg = await navigator.serviceWorker.register("/sw.js");
-        subscriptionId = await setupPushSubscription(reg);
-      } catch (e) {
-        console.warn("Service worker registration failed:", e.message);
-      }
-    }
-
-    watchId = navigator.geolocation.watchPosition(
-      onPositionUpdate,
-      (err) => { setStatus(geoErrorMsg(err), "error"); stopTracking(); },
-      { enableHighAccuracy: true, timeout: 20000, maximumAge: 5000 }
-    );
-
-    isTracking = true;
-    trackBtn.classList.add("is-tracking");
-    trackLabel.textContent = "Stop tracking";
-    setStatus("Tracking active — checking every 30 s", "info", true);
-  });
-
-  function stopTracking() {
-    if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
-    if (liveMarker)       { map.removeLayer(liveMarker); liveMarker = null; }
-    isTracking = false;
-    trackBtn.classList.remove("is-tracking");
-    trackLabel.textContent = "Start tracking";
-    statusEl.classList.remove("is-visible");
-    banner.classList.remove("is-visible");
-  }
-
-  if (!window.isSecureContext) {
-    setStatus("Needs HTTPS (or localhost) for location access.", "error");
-    logBtn.disabled = true; trackBtn.disabled = true;
-  }
-
-  // ── Init ────────────────────────────────────────────────────────────────────
-  loadPlaces();
-})();
-</script>
-</body>
-</html>
